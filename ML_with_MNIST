@@ -1,0 +1,134 @@
+import os
+import torch
+import torchvision.datasets as dataset
+import torchvision.transforms as transforms
+from torch import nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import numpy as np
+
+batch_size = 32		# batch size
+epochs = 10			# training epochs
+alpha = 0.001		# learning rate
+input_dim = 28**2	# input dimensions of 28x28 image
+output_dim = 10		# output dimensions (integers from 0 to 9)
+
+# file path for MNIST data
+root = './data'
+if not os.path.exists(root):
+    os.mkdir(root)
+# file path for saving models
+PATH = './mnist_model.pth'
+
+# datasets 
+trans = transforms.Compose([transforms.ToTensor(), transforms.Normalize(0.5,1.0)])	# create transform which converts to tensor and normalizes
+# download MNIST dataset and split train/test sets
+train_set = dataset.MNIST(root=root, train=True, transform=trans, download=True)	# training set, size = 60,000
+test_set = dataset.MNIST(root=root, train=False, transform=trans, download=True)	# test set, size = 10,000
+# loader for training data
+train_loader = torch.utils.data.DataLoader(
+                 dataset=train_set,
+                 batch_size=batch_size,
+                 shuffle=True)
+# loader for test data
+test_loader = torch.utils.data.DataLoader(
+                dataset=test_set,
+                batch_size=batch_size,
+                shuffle=False)
+
+# neural network with 1 input layer, 1 hidden layer, and 1 output layer
+class MyNet(nn.Module):
+	def __init__(self):
+		# calls constructor from super class (nn.Module)
+		super(MyNet,self).__init__()
+		self.fc1 = nn.Linear(input_dim,250)		# input layer
+		self.fc2 = nn.Linear(250,200)			# hidden layer
+		self.fc3 = nn.Linear(200,output_dim)	# output layer
+
+	# forward propagation
+	def forward(self,input):
+		input = F.relu(self.fc1(input))
+		input = F.relu(self.fc2(input))
+		input = self.fc3(input)
+		return F.log_softmax(input, dim=1)
+
+# initialize model
+model = MyNet()		
+loss_func = torch.nn.CrossEntropyLoss()					# cross entropy loss function
+optimizer = optim.Adam(model.parameters(), lr=alpha) 	# Adam optimizer								
+
+# Training Phase
+print("Training...")
+for j in range(epochs):
+	epoch_loss = 0.0	# cumulative loss during epoch
+	# loop through mini-batchs of training data
+	for i, data in enumerate (train_loader):
+		# format training data
+		images, labels = data 									# seperate images from labels
+		images = torch.flatten(images,start_dim=1, end_dim=2) 	# remove channel dim for grayscale images
+		images = torch.flatten(images,start_dim = 1)			# flatten image width and height 
+
+		# forward, backward propagation
+		optimizer.zero_grad()				# zero the parameter gradients
+		outputs = model(images)				# predict outputs for training data
+		loss = loss_func(outputs, labels)	# calculate loss	
+		loss.backward()						# backwards propagation of error
+		optimizer.step()					# update parameters using chosen optimizer
+		epoch_loss += loss.item()			# update running loss of epoch
+
+		# print info every 200th iteration
+		if (i%200==0):
+			print("Epoch: ", j+1, "/", epochs)
+			print("Iteration: ", i)
+			print("Batch Loss: ",round(epoch_loss/(i+1),6))
+print ("Training complete!")
+
+# save model
+torch.save(model.state_dict(), PATH)
+
+# re-load model (not necessary to rel-load, but shows loading functionality)
+model = MyNet()
+model.load_state_dict(torch.load(PATH))
+
+# Testing Phase
+print("Testing...")
+model.eval()			# change model to evaluation mode
+torch.no_grad()			# do not store gradient information during testing
+
+# loop through training minibatches
+true_train_pred = 0.0	# number of true predictions
+train_loss = 0.0		# loss on training images
+for i, train_data in enumerate (train_loader):
+	# formatting training data
+	images, labels = train_data 							# seperate images from labels
+	images = torch.flatten(images,start_dim=1, end_dim=2) 	# remove channel dim for grayscale images
+	images = torch.flatten(images,start_dim = 1)			# flatten image width and height 
+
+	predictions = model(images)	# make prediction
+
+	# accuracy and loss
+	train_loss += loss_func(predictions, labels).item() 		# accumulate training loss
+	true_train_pred += torch.sum(torch.argmax(predictions,dim=1) == labels).item() # compare predictions to labels
+
+# loop through test minibatches
+true_test_pred = 0.0	# number of true predictions
+test_loss = 0.0			# loss on training images
+for i, test_data in enumerate (test_loader):
+	# formatting test data
+	images, labels = test_data 								# seperate images from labels
+	images = torch.flatten(images,start_dim=1, end_dim=2) 	# remove channel dim for grayscale images
+	images = torch.flatten(images,start_dim = 1)			# flatten image width and height 
+
+	predictions = model(images)	# make prediction
+
+	# accuracy and loss
+	test_loss += loss_func(predictions, labels).item() 		# accumulate test loss
+	true_test_pred += torch.sum(torch.argmax(predictions,dim=1) == labels).item() # compare predictions to labels
+print("Testing Complete!")
+
+# show accuracy and losses scaled to data sample size
+print("Training Accuracy: ",round((true_train_pred /60000)*100,2), "%")
+print("Testing Accuracy: ",round((true_test_pred /10000)*100,2), "%")
+print("Training Loss: ", round(train_loss/60000,6))
+print("Testing Loss: ", round(test_loss/10000,6))
