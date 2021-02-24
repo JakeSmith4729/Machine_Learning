@@ -1,3 +1,3 @@
 # Machine_Learning
 
-A simple neural net trained to categorize MNIST data with PyTorch
+A collection of projects related to machine learning
