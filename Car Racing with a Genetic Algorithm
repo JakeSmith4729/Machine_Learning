@@ -1,0 +1,246 @@
+import pygame, random
+import numpy as np
+import math
+import scipy.misc
+from skimage.draw import ellipse
+import random 
+
+# colors being used
+GREY = (150, 150 ,150)
+WHITE = (255, 255, 255)
+BLACK = (0,0,0)
+RED = (255, 0, 0)
+GREEN = (0,255,0)	
+BLUE = (0,0,255)
+
+# display attributes
+SCREEN_WIDTH=1200							
+SCREEN_HEIGHT=1000							
+
+# car attributes
+CAR_WIDTH = 30								
+CAR_LENGTH = 50								
+SPEED_LIM = 8.0								
+START_POS = [600-(CAR_LENGTH/2)-10,850]		
+
+# breeding variables
+GEN_SIZE = 15	# number of cars in a generation 
+MUT_AMP = 0.25	# mutation amplitude (std dev of the Gaussian distribution used)
+
+# activation functions for neural net
+def sigmoid(Z):
+    return 1/(1+np.exp(-Z))
+def relu(Z):
+    return np.maximum(0,Z)
+
+# rotates list of points around given origin 
+def rotate_points(origin,points,angle):
+	# centerpoint of rotation
+	ox, oy = origin 
+	# iterate through points
+	for i in range(len(points)):
+			px, py = points[i]	# point to be rotated 
+			points[i][0] = ox + math.cos(angle) * (px - ox) - math.sin(angle) * (py - oy)	# rotate x and update
+			points[i][1] = oy + math.sin(angle) * (px - ox) + math.cos(angle) * (py - oy)	# rotate y and update
+	# return new points
+	return points
+
+# car class
+class Car(pygame.sprite.Sprite):   
+	def __init__(self, parents=None):
+		# Call the parent class (Sprite) constructor
+		super().__init__()
+		# movement variables
+		self.x = START_POS[0]		# center x-position
+		self.y = START_POS[1]		# center y-position
+		self.coord = [[self.x+(CAR_LENGTH/2.0),self.y+(CAR_WIDTH/2.0)],[self.x+(CAR_LENGTH/2.0),self.y-(CAR_WIDTH/2.0)],[self.x-(CAR_LENGTH/2.0),self.y-(CAR_WIDTH/2.0)],[self.x-(CAR_LENGTH/2.0),self.y+(CAR_WIDTH/2.0)]] # car body coordinates
+		self.tracking_rect = pygame.Rect(10,10,30,30)	
+		self.tracking_rect.center = (self.x,self.y)
+		self.speed = 1.0				
+		self.dir = 0					
+		self.turn_speed = 0				
+		self.alive = True 				
+		self.is_parent = False		
+
+		# neural net variables
+		if parents == None:
+			self.w1 = np.random.uniform(-1, 1, [4,3])
+			self.w2 = np.random.uniform(-1, 1, [3,2])
+			self.b1 = np.random.uniform(-1, 1, [1,3])
+			self.b2 = np.random.uniform(-1, 1, [1,2])
+		elif parents!= None:
+			self.w1 = np.zeros((4,3))
+			self.w2 = np.zeros((3,2))
+			self.b1 = np.zeros((1,3))
+			self.b2 = np.zeros((1,2))
+			# crossover and mutations
+			for index, x in np.ndenumerate(self.w1):
+				self.w1[index[0],index[1]] = parents[np.random.randint(len(parents))].w1[index[0],index[1]] + np.random.normal(scale=MUT_AMP)
+			for index, x in np.ndenumerate(self.w2):
+				self.w2[index[0],index[1]] = parents[np.random.randint(len(parents))].w2[index[0],index[1]] + np.random.normal(scale=MUT_AMP)
+			for index, x in np.ndenumerate(self.b1):
+				self.b1[index[0],index[1]] = parents[np.random.randint(len(parents))].b1[index[0],index[1]] + np.random.normal(scale=MUT_AMP)
+			for index, x in np.ndenumerate(self.b2):
+				self.b2[index[0],index[1]] = parents[np.random.randint(len(parents))].b2[index[0],index[1]] + np.random.normal(scale=MUT_AMP)
+
+	# draws car
+	def draw_car(self,surface):
+		# RED = alive, BLACK = dead, BLUE = selected as parent
+		if self.alive == True:
+			pygame.draw.polygon(surface,RED,self.coord)
+		elif self.alive == False:
+			pygame.draw.polygon(surface,BLACK,self.coord)
+		if self.is_parent:
+			pygame.draw.polygon(surface,BLUE,self.coord)	
+
+	# checks if the car has collided with the track
+	def check_collision(self,bound_array):
+		i = 0 
+		for i in range(len(self.coord)):
+			point = self.coord[i]
+			if bound_array[round(point[0]),round(point[1])] == 0:
+				self.alive = False
+			i+=1
+
+	# returns the length of a vision line
+	def vis_line_len(self,line_dir,bound_array):
+		length = 0
+		contact = False
+		while(contact==False):
+			length+=1.0
+			end_x = round(self.x + length * math.cos(line_dir))
+			end_y = round(self.y + length * math.sin(line_dir))
+			if bound_array[end_x][end_y] == 0:
+				contact = True
+		true_length = math.sqrt((end_x - self.x)**2 + (end_y - self.y)**2)
+		return true_length
+
+	# gets the length of all vision lines
+	def get_vision(self,bound_array):
+		vis_right = self.vis_line_len(self.dir-(math.pi/2),bound_array)
+		vis_front = self.vis_line_len(self.dir, bound_array)
+		vis_left = self.vis_line_len(self.dir+(math.pi/2), bound_array)
+		return [vis_right, vis_front, vis_left]
+			
+	# update all of the car's variables	
+	def update_state(self,bound_array):
+		# use neural net to calculate changes in speed and turning speed
+		vis_info = self.get_vision(bound_array)
+		state_info = np.array([[self.speed, vis_info[0],vis_info[1],vis_info[2]]])
+		output = relu(np.matmul(state_info,self.w1) + self.b1)
+		output = sigmoid(np.matmul(output, self.w2) + self.b2)[0]-0.5
+		# update speed, checking if it breached the speed limit
+		self.speed += output[0]
+		if self.speed > SPEED_LIM:
+			self.speed = SPEED_LIM
+		elif self.speed < 0:
+			self.speed = 0
+		# update turning speed, checking if it breached the turn_speed limit
+		self.turn_speed = output[1]*0.1	
+		if self.turn_speed > 0.5:
+			self.turn_speed = 0.5
+		if self.turn_speed < -0.5:
+			self.turn_speed = -0.5
+		# update position variables
+		self.x += math.cos(self.dir)*self.speed
+		self.y += math.sin(self.dir)*self.speed
+		self.tracking_rect.center=(self.x,self.y)
+		i = 0 
+		for i in range(len(self.coord)):
+			self.coord[i][0] += math.cos(self.dir)*self.speed
+			self.coord[i][1] += math.sin(self.dir)*self.speed
+			i+=1
+		self.dir += self.turn_speed 
+		self.coord = rotate_points(origin=[self.x,self.y],points=self.coord,angle=self.turn_speed)
+
+# breeds a new generation of cars using selected parents
+def breed_gen(parents):
+	generation = []
+	if parents == None:
+		i=0
+		for i in range(GEN_SIZE):
+			generation.append(Car())
+			i+=1
+	elif parents != None:
+		i=0
+		for i in range(GEN_SIZE):
+			generation.append(Car(parents))
+			i+=1
+	return generation
+
+# breed starting generation of cars
+car_list = breed_gen(parents=None)
+parent_list = []
+gen_num = 0
+
+# initialize pygame
+pygame.init()
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT)) 						
+clock = pygame.time.Clock()									
+
+# create track boundaries
+track = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))					# create track surface
+track_array = pygame.PixelArray(track)									# get pixel array of track
+track_bounds = np.zeros((SCREEN_WIDTH, SCREEN_HEIGHT), dtype=np.uint8)	# create boundary array
+rr, cc = ellipse(int(SCREEN_WIDTH/2), (SCREEN_HEIGHT/2), 550, 450)		# draw outer elliptical boundary
+track_bounds[rr, cc] = 1												# fill contained values as 1 (this will be the track)
+rr, cc = ellipse(int(SCREEN_WIDTH/2), (SCREEN_HEIGHT/2), 375, 250)		# draw inner elliptical boundary														
+track_bounds[rr, cc] = 0												# fill contained values as 0 (this will be "out-of-track_bounds")	
+
+# color the track
+i = 0
+j = 0
+for i in range(SCREEN_WIDTH):
+	for j in range(SCREEN_HEIGHT):
+		if track_bounds[i][j] == 1:
+			track_array[i][j] = GREY	# color points out-of-track_bounds to grey
+		elif track_bounds[i][j] == 0:
+			track_array[i][j] = BLACK	# color points out-of-track_bounds to black
+		j+=1
+	i+=1
+# convert track to drawable image
+track = track_array.make_surface()	
+track.convert()						
+screen.blit(track,(0,0))			
+
+# main game loop
+run = True
+while run: 
+	# events loop
+	for event in pygame.event.get():
+		# quit if window is exited
+		if event.type == pygame.QUIT:
+			pygame.quit()
+			quit()
+		# clicking mouse on a car makes it a parent of the next generation
+		elif event.type == pygame.MOUSEBUTTONDOWN:
+			for car in car_list:
+				if car.tracking_rect.collidepoint(pygame.mouse.get_pos()):
+					parent_list.append(car)
+					car.is_parent = True
+		# hitting spacebar breeds a new generation with selected parents
+		if event.type == pygame.KEYDOWN:
+			if event.key == pygame.K_SPACE:
+				gen_num+=1
+				if not parent_list:
+					parent_list.append(Car())
+					gen_num = 0
+
+				car_list = breed_gen(parent_list)
+				parent_list = []
+
+	# check if cars crashed and update alive cars
+	for car in car_list:
+		if car.alive:
+			car.check_collision(track_bounds)	
+			car.update_state(track_bounds)		
+
+	# update display
+	screen.fill(WHITE)				
+	track.convert()
+	screen.blit(track,(0,0))		
+	pygame.draw.line(screen, GREEN, (600,750),(600,950), width=20)	# draw starting line
+	for car in car_list:
+		car.draw_car(screen)				
+	pygame.display.flip()
+	clock.tick(60)	
